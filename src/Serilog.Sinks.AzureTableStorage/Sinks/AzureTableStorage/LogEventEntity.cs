@@ -14,7 +14,8 @@
 
 using System;
 using System.IO;
-using Microsoft.Azure.Cosmos.Table;
+using Azure;
+using Azure.Data.Tables;
 using Serilog.Events;
 using Serilog.Formatting;
 
@@ -24,7 +25,7 @@ namespace Serilog.Sinks.AzureTableStorage
     /// <summary>
     /// Represents a single log event for the Serilog Azure Table Storage Sink.
     /// </summary>
-    public class LogEventEntity : TableEntity
+    public class LogEventEntity : ITableEntity
     {
         /// <summary>
         /// Default constructor for the Storage Client library to re-hydrate entities when querying.
@@ -66,6 +67,46 @@ namespace Serilog.Sinks.AzureTableStorage
             return rowKey.Length > 1024 ? rowKey.Substring(0, 1024) : rowKey;
         }
 
+        //
+        // Summary:
+        //     The partition key is a unique identifier for the partition within a given table
+        //     and forms the first part of an entity's primary key.
+        //
+        // Value:
+        //     A string containing the partition key for the entity.
+        public string PartitionKey { get; set; }
+
+        //
+        // Summary:
+        //     The row key is a unique identifier for an entity within a given partition. Together
+        //     the Azure.Data.Tables.ITableEntity.PartitionKey and RowKey uniquely identify
+        //     every entity within a table.
+        //
+        // Value:
+        //     A string containing the row key for the entity.
+        public string RowKey { get; set; }
+
+        //
+        // Summary:
+        //     The Timestamp property is a DateTime value that is maintained on the server side
+        //     to record the time an entity was last modified. The Table service uses the Timestamp
+        //     property internally to provide optimistic concurrency. The value of Timestamp
+        //     is a monotonically increasing value, meaning that each time the entity is modified,
+        //     the value of Timestamp increases for that entity. This property should not be
+        //     set on insert or update operations (the value will be ignored).
+        //
+        // Value:
+        //     A System.DateTimeOffset containing the timestamp of the entity.
+
+        public DateTimeOffset? Timestamp { get; set; }
+
+        //
+        // Summary:
+        //     Gets or sets the entity's ETag.
+        //
+        // Value:
+        //     A string containing the ETag value for the entity.
+        public ETag ETag { get; set; }
         /// <summary>
         /// The template that was used for the log message.
         /// </summary>

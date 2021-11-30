@@ -12,9 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using System;
 using System.Threading;
-using Microsoft.Azure.Cosmos.Table;
+using Azure.Data.Tables;
 using Serilog.Core;
 using Serilog.Events;
 using Serilog.Formatting;
@@ -31,7 +30,7 @@ namespace Serilog.Sinks.AzureTableStorage
         readonly int _waitTimeoutMilliseconds = Timeout.Infinite;
         readonly ITextFormatter _textFormatter;
         readonly IKeyGenerator _keyGenerator;
-        readonly CloudStorageAccount _storageAccount;
+        readonly TableServiceClient _tableServiceClient;
         readonly string _storageTableName;
         readonly bool _bypassTableCreationValidation;
         readonly ICloudTableProvider _cloudTableProvider;
@@ -46,7 +45,7 @@ namespace Serilog.Sinks.AzureTableStorage
         /// <param name="bypassTableCreationValidation">Bypass the exception in case the table creation fails.</param>
         /// <param name="cloudTableProvider">Cloud table provider to get current log table.</param>
         public AzureTableStorageSink(
-            CloudStorageAccount storageAccount,
+            TableServiceClient tableServiceClient,
             ITextFormatter textFormatter,
             string storageTableName = null,
             IKeyGenerator keyGenerator = null,
@@ -61,7 +60,7 @@ namespace Serilog.Sinks.AzureTableStorage
                 storageTableName = typeof(LogEventEntity).Name;
             }
 
-            _storageAccount = storageAccount;
+            _tableServiceClient = tableServiceClient;
             _storageTableName = storageTableName;
             _bypassTableCreationValidation = bypassTableCreationValidation;
             _cloudTableProvider = cloudTableProvider ?? new DefaultCloudTableProvider();
@@ -73,7 +72,7 @@ namespace Serilog.Sinks.AzureTableStorage
         /// <param name="logEvent">The log event to write.</param>
         public void Emit(LogEvent logEvent)
         {
-            var table = _cloudTableProvider.GetCloudTable(_storageAccount, _storageTableName, _bypassTableCreationValidation);
+            var table = _cloudTableProvider.GetCloudTable(_tableServiceClient, _storageTableName, _bypassTableCreationValidation);
             var logEventEntity = new LogEventEntity(
                 logEvent,
                 _textFormatter,
@@ -81,8 +80,7 @@ namespace Serilog.Sinks.AzureTableStorage
                 _keyGenerator.GenerateRowKey(logEvent)
                 );
 
-            table.ExecuteAsync(TableOperation.InsertOrMerge(logEventEntity))
-                .SyncContextSafeWait(_waitTimeoutMilliseconds);
+            table.UpsertEntityAsync(logEventEntity).SyncContextSafeWait(_waitTimeoutMilliseconds);
         }
     }
 }

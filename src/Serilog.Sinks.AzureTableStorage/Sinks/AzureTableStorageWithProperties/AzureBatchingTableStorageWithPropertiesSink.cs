@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using Microsoft.Azure.Cosmos.Table;
+using Azure.Data.Tables;
 using Serilog.Events;
 using Serilog.Sinks.AzureTableStorage.AzureTableProvider;
 using Serilog.Sinks.AzureTableStorage.KeyGenerator;
@@ -34,7 +34,7 @@ namespace Serilog.Sinks.AzureTableStorage
         readonly string[] _propertyColumns;
         const int _maxAzureOperationsPerBatch = 100;
         readonly IKeyGenerator _keyGenerator;
-        readonly CloudStorageAccount _storageAccount;
+        readonly TableServiceClient _tableServiceClient;
         readonly string _storageTableName;
         readonly bool _bypassTableCreationValidation;
         readonly ICloudTableProvider _cloudTableProvider;
@@ -53,7 +53,7 @@ namespace Serilog.Sinks.AzureTableStorage
         /// <param name="bypassTableCreationValidation">Bypass the exception in case the table creation fails.</param>
         /// <param name="cloudTableProvider">Cloud table provider to get current log table.</param>
         /// <returns>Logger configuration, allowing configuration to continue.</returns>
-        public AzureBatchingTableStorageWithPropertiesSink(CloudStorageAccount storageAccount,
+        public AzureBatchingTableStorageWithPropertiesSink(TableServiceClient tableServiceClient,
             IFormatProvider formatProvider,
             int batchSizeLimit,
             TimeSpan period,
@@ -70,7 +70,7 @@ namespace Serilog.Sinks.AzureTableStorage
                 storageTableName = "LogEventEntity";
             }
 
-            _storageAccount = storageAccount;
+            _tableServiceClient = tableServiceClient;
             _storageTableName = storageTableName;
             _bypassTableCreationValidation = bypassTableCreationValidation;
             _cloudTableProvider = cloudTableProvider ?? new DefaultCloudTableProvider();
@@ -83,9 +83,9 @@ namespace Serilog.Sinks.AzureTableStorage
 
         protected override async Task EmitBatchAsync(IEnumerable<LogEvent> events)
         {
-            var table = _cloudTableProvider.GetCloudTable(_storageAccount, _storageTableName, _bypassTableCreationValidation);
+            var table = _cloudTableProvider.GetCloudTable(_tableServiceClient, _storageTableName, _bypassTableCreationValidation);
             string lastPartitionKey = null;
-            TableBatchOperation operation = null;
+            List<TableTransactionAction> operation = null;
             var insertsPerOperation = 0;
 
             foreach (var logEvent in events)
@@ -107,22 +107,22 @@ namespace Serilog.Sinks.AzureTableStorage
                     // If there is an operation currently in use, execute it
                     if (operation != null)
                     {
-                        await table.ExecuteBatchAsync(operation).ConfigureAwait(false);
+                        await table.SubmitTransactionAsync(operation).ConfigureAwait(false);
                     }
 
                     // Create a new batch operation and zero count
-                    operation = new TableBatchOperation();
+                    operation = new List<TableTransactionAction>();
                     insertsPerOperation = 0;
                 }
 
                 // Add current entry to the batch
-                operation.Add(TableOperation.InsertOrMerge(tableEntity));
+                operation.Add(new TableTransactionAction(TableTransactionActionType.UpsertMerge, tableEntity));
 
                 insertsPerOperation++;
             }
 
             // Execute last batch
-            await table.ExecuteBatchAsync(operation).ConfigureAwait(false);
+            await table.SubmitTransactionAsync(operation).ConfigureAwait(false);
         }
     }
 }

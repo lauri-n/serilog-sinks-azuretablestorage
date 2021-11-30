@@ -20,7 +20,7 @@ using Serilog.Sinks.PeriodicBatching;
 using System;
 using System.Collections.Generic;
 using Serilog.Formatting;
-using Microsoft.Azure.Cosmos.Table;
+using Azure.Data.Tables;
 
 namespace Serilog.Sinks.AzureTableStorage
 {
@@ -31,7 +31,7 @@ namespace Serilog.Sinks.AzureTableStorage
     {
         readonly ITextFormatter _textFormatter;
         readonly IKeyGenerator _keyGenerator;
-        readonly CloudStorageAccount _storageAccount;
+        readonly TableServiceClient _tableServiceClient;
         readonly string _storageTableName;
         readonly bool _bypassTableCreationValidation;
         readonly ICloudTableProvider _cloudTableProvider;
@@ -46,14 +46,14 @@ namespace Serilog.Sinks.AzureTableStorage
         /// <param name="storageTableName">Table name that log entries will be written to. Note: Optional, setting this may impact performance</param>
         /// <param name="cloudTableProvider">Cloud table provider to get current log table.</param>
         public AzureBatchingTableStorageSink(
-            CloudStorageAccount storageAccount,
+            TableServiceClient tableServiceClient,
             IFormatProvider formatProvider,
             ITextFormatter textFormatter,
             int batchSizeLimit,
             TimeSpan period,
             string storageTableName = null,
             ICloudTableProvider cloudTableProvider = null)
-            : this(storageAccount, textFormatter, batchSizeLimit, period, storageTableName, new DefaultKeyGenerator(), cloudTableProvider: cloudTableProvider)
+            : this(tableServiceClient, textFormatter, batchSizeLimit, period, storageTableName, new DefaultKeyGenerator(), cloudTableProvider: cloudTableProvider)
         {
         }
 
@@ -69,7 +69,7 @@ namespace Serilog.Sinks.AzureTableStorage
         /// <param name="bypassTableCreationValidation">Bypass the exception in case the table creation fails.</param>
         /// <param name="cloudTableProvider">Cloud table provider to get current log table.</param>
         public AzureBatchingTableStorageSink(
-            CloudStorageAccount storageAccount,
+            TableServiceClient tableServiceClient,
             ITextFormatter textFormatter,
             int batchSizeLimit,
             TimeSpan period,
@@ -90,7 +90,7 @@ namespace Serilog.Sinks.AzureTableStorage
                 storageTableName = typeof(LogEventEntity).Name;
             }
 
-            _storageAccount = storageAccount;
+            _tableServiceClient = tableServiceClient;
             _storageTableName = storageTableName;
             _bypassTableCreationValidation = bypassTableCreationValidation;
             _cloudTableProvider = cloudTableProvider ?? new DefaultCloudTableProvider();
@@ -98,8 +98,8 @@ namespace Serilog.Sinks.AzureTableStorage
 
         protected override async Task EmitBatchAsync(IEnumerable<LogEvent> events)
         {
-            var table = _cloudTableProvider.GetCloudTable(_storageAccount, _storageTableName, _bypassTableCreationValidation);
-            TableBatchOperation operation = new TableBatchOperation();
+            var table = _cloudTableProvider.GetCloudTable(_tableServiceClient, _storageTableName, _bypassTableCreationValidation);
+            List<TableTransactionAction> operation = new List<TableTransactionAction>();
 
             string lastPartitionKey = null;
 
@@ -112,8 +112,8 @@ namespace Serilog.Sinks.AzureTableStorage
                     lastPartitionKey = partitionKey;
                     if (operation.Count > 0)
                     {
-                        await table.ExecuteBatchAsync(operation).ConfigureAwait(false);
-                        operation = new TableBatchOperation();
+                        await table.SubmitTransactionAsync(operation).ConfigureAwait(false);
+                        operation = new List<TableTransactionAction>();
                     }
                 }
                 var logEventEntity = new LogEventEntity(
@@ -122,11 +122,11 @@ namespace Serilog.Sinks.AzureTableStorage
                     partitionKey,
                     _keyGenerator.GenerateRowKey(logEvent)
                     );
-                operation.Add(TableOperation.InsertOrMerge(logEventEntity));
+                operation.Add(new TableTransactionAction(TableTransactionActionType.UpsertMerge, logEventEntity));
             }
             if (operation.Count > 0)
             {
-                await table.ExecuteBatchAsync(operation).ConfigureAwait(false);
+                await table.SubmitTransactionAsync(operation).ConfigureAwait(false);
             }
         }
     }

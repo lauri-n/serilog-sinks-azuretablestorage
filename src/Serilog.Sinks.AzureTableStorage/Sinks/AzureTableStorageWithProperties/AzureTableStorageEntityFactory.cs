@@ -18,7 +18,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Serilog.Sinks.AzureTableStorage.KeyGenerator;
-using Microsoft.Azure.Cosmos.Table;
+using Azure.Data.Tables;
 
 namespace Serilog.Sinks.AzureTableStorage
 {
@@ -41,28 +41,26 @@ namespace Serilog.Sinks.AzureTableStorage
         /// <param name="keyGenerator">The IKeyGenerator for the PartitionKey and RowKey</param>
         /// <param name="propertyColumns">Specific properties to be written to columns. By default, all properties will be written to columns.</param>
         /// <returns></returns>
-        public static DynamicTableEntity CreateEntityWithProperties(LogEvent logEvent, IFormatProvider formatProvider, string additionalRowKeyPostfix, IKeyGenerator keyGenerator, string[] propertyColumns = null)
+        public static TableEntity CreateEntityWithProperties(LogEvent logEvent, IFormatProvider formatProvider, string additionalRowKeyPostfix, IKeyGenerator keyGenerator, string[] propertyColumns = null)
         {
-            var tableEntity = new DynamicTableEntity
+            var tableEntity = new TableEntity
             {
                 PartitionKey = keyGenerator.GeneratePartitionKey(logEvent),
                 RowKey = keyGenerator.GenerateRowKey(logEvent, additionalRowKeyPostfix),
                 Timestamp = logEvent.Timestamp
             };
 
-            var dynamicProperties = tableEntity.Properties;
-
-            dynamicProperties.Add("MessageTemplate", new EntityProperty(logEvent.MessageTemplate.Text));
-            dynamicProperties.Add("Level", new EntityProperty(logEvent.Level.ToString()));
-            dynamicProperties.Add("RenderedMessage", new EntityProperty(logEvent.RenderMessage(formatProvider)));
+            tableEntity.Add("MessageTemplate", logEvent.MessageTemplate.Text);
+            tableEntity.Add("Level", logEvent.Level.ToString());
+            tableEntity.Add("RenderedMessage", logEvent.RenderMessage(formatProvider));
 
             if (logEvent.Exception != null)
             {
-                dynamicProperties.Add("Exception", new EntityProperty(logEvent.Exception.ToString()));
+                tableEntity.Add("Exception", logEvent.Exception.ToString());
             }
 
             List<KeyValuePair<ScalarValue, LogEventPropertyValue>> additionalData = null;
-            var count = dynamicProperties.Count;
+            var count = tableEntity.Count;
             bool isValid;
 
             foreach (var logProperty in logEvent.Properties)
@@ -72,7 +70,7 @@ namespace Serilog.Sinks.AzureTableStorage
                 // Don't add table properties for numeric property names
                 if (isValid && (count++ < _maxNumberOfPropertiesPerRow - 1))
                 {
-                    dynamicProperties.Add(logProperty.Key, AzurePropertyFormatter.ToEntityProperty(logProperty.Value, null, formatProvider));
+                    tableEntity.Add(logProperty.Key, AzurePropertyFormatter.ToEntityProperty(logProperty.Value, null, formatProvider));
                 }
                 else
                 {
@@ -86,7 +84,7 @@ namespace Serilog.Sinks.AzureTableStorage
 
             if (additionalData != null)
             {
-                dynamicProperties.Add("AggregatedProperties", AzurePropertyFormatter.ToEntityProperty(new DictionaryValue(additionalData), null, formatProvider));
+                tableEntity.Add("AggregatedProperties", AzurePropertyFormatter.ToEntityProperty(new DictionaryValue(additionalData), null, formatProvider));
             }
 
             return tableEntity;

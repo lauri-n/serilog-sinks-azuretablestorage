@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-using Microsoft.Azure.Cosmos.Table;
+using Azure.Data.Tables;
 using Serilog.Core;
 using Serilog.Events;
 using Serilog.Sinks.AzureTableStorage.AzureTableProvider;
@@ -33,7 +33,7 @@ namespace Serilog.Sinks.AzureTableStorage
         readonly string _additionalRowKeyPostfix;
         readonly string[] _propertyColumns;
         readonly IKeyGenerator _keyGenerator;
-        readonly CloudStorageAccount _storageAccount;
+        readonly TableServiceClient _tableServiceClient;
         readonly string _storageTableName;
         readonly bool _bypassTableCreationValidation;
         readonly ICloudTableProvider _cloudTableProvider;
@@ -49,7 +49,7 @@ namespace Serilog.Sinks.AzureTableStorage
         /// <param name="propertyColumns">Specific properties to be written to columns. By default, all properties will be written to columns.</param>
         /// <param name="bypassTableCreationValidation">Bypass the exception in case the table creation fails.</param>
         /// <param name="cloudTableProvider">Cloud table provider to get current log table.</param>
-        public AzureTableStorageWithPropertiesSink(CloudStorageAccount storageAccount,
+        public AzureTableStorageWithPropertiesSink(TableServiceClient tableServiceClient,
             IFormatProvider formatProvider,
             string storageTableName = null,
             string additionalRowKeyPostfix = null,
@@ -63,7 +63,7 @@ namespace Serilog.Sinks.AzureTableStorage
                 storageTableName = "LogEventEntity";
             }
 
-            _storageAccount = storageAccount;
+            _tableServiceClient = tableServiceClient;
             _storageTableName = storageTableName;
             _bypassTableCreationValidation = bypassTableCreationValidation;
             _cloudTableProvider = cloudTableProvider ?? new DefaultCloudTableProvider();
@@ -80,10 +80,9 @@ namespace Serilog.Sinks.AzureTableStorage
         /// <param name="logEvent">The log event to write.</param>
         public void Emit(LogEvent logEvent)
         {
-            var table = _cloudTableProvider.GetCloudTable(_storageAccount, _storageTableName, _bypassTableCreationValidation);
-            var op = TableOperation.InsertOrMerge(AzureTableStorageEntityFactory.CreateEntityWithProperties(logEvent, _formatProvider, _additionalRowKeyPostfix, _keyGenerator, _propertyColumns));
-
-            table.ExecuteAsync(op).SyncContextSafeWait(_waitTimeoutMilliseconds);
+            var table = _cloudTableProvider.GetCloudTable(_tableServiceClient, _storageTableName, _bypassTableCreationValidation);
+            var entity = AzureTableStorageEntityFactory.CreateEntityWithProperties(logEvent, _formatProvider, _additionalRowKeyPostfix, _keyGenerator, _propertyColumns);
+            table.UpsertEntityAsync(entity).SyncContextSafeWait(_waitTimeoutMilliseconds);
         }
     }
 }
