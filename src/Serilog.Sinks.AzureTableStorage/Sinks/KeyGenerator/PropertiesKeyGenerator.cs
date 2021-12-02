@@ -11,6 +11,9 @@ namespace Serilog.Sinks.AzureTableStorage.Sinks.KeyGenerator
         // Valid RowKey name characters
         private static readonly Regex _rowKeyNotAllowedMatch = new Regex(@"(\\|/|#|\?|[\x00-\x1f]|[\x7f-\x9f])");
 
+        // Maximum RowKey length (1024B so 512 chars)
+        private const int _maxRowKeyLengthCharacters = 1024 / 2;
+
         /// <summary>
         /// Generate a valid string for a table property key by removing invalid characters
         /// </summary>
@@ -26,19 +29,19 @@ namespace Serilog.Sinks.AzureTableStorage.Sinks.KeyGenerator
         }
 
         /// <summary>
-        /// Automatically generates the RowKey using the following template: {Level|MessageTemplate|IncrementedRowId}
+        /// Automatically generates the RowKey using the following template: {Level|MessageTemplate|suffix|Guid}
         /// </summary>
         /// <param name="logEvent">the log event</param>
         /// <param name="suffix">suffix for the RowKey</param>
         /// <returns>The generated RowKey</returns>
         public override string GenerateRowKey(LogEvent logEvent, string suffix = null)
         {
-            var prefixBuilder = new StringBuilder(512);
+            var prefixBuilder = new StringBuilder(_maxRowKeyLengthCharacters);
 
             // Join level and message template
             prefixBuilder.Append(logEvent.Level).Append('|').Append(GetValidStringForTableKey(logEvent.MessageTemplate.Text));
 
-            var postfixBuilder = new StringBuilder(512);
+            var postfixBuilder = new StringBuilder(_maxRowKeyLengthCharacters);
 
             if (suffix != null)
                 postfixBuilder.Append('|').Append(GetValidStringForTableKey(suffix));
@@ -47,7 +50,7 @@ namespace Serilog.Sinks.AzureTableStorage.Sinks.KeyGenerator
             postfixBuilder.Append('|').Append(Guid.NewGuid());
 
             // Truncate prefix if too long
-            var maxPrefixLength = 1024 - postfixBuilder.Length;
+            var maxPrefixLength = _maxRowKeyLengthCharacters - postfixBuilder.Length;
             if (prefixBuilder.Length > maxPrefixLength)
             {
                 prefixBuilder.Length = maxPrefixLength;
