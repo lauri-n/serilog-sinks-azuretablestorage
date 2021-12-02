@@ -5,11 +5,14 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Serilog.Sinks.AzureTableStorage.Sinks.KeyGenerator;
+using System.Text;
 
 namespace Serilog.Sinks.AzureTableStorage.Tests
 {
     public class AzureTableStorageEntityFactoryTests
     {
+        private const int _propertyMaximumSizeBytes = 65536;
+
         [Fact]
         public void CreateEntityWithPropertiesShouldGenerateValidEntity()
         {
@@ -64,7 +67,7 @@ namespace Serilog.Sinks.AzureTableStorage.Tests
             var additionalRowKeyPostfix = "POSTFIX";
 
             var postLength = additionalRowKeyPostfix.Length + 1 + Guid.NewGuid().ToString().Length;
-            var messageSpace = 1024 - (level.ToString().Length + 1) - (1 + postLength);
+            var messageSpace = 512 - (level.ToString().Length + 1) - (1 + postLength);
 
             // Message up to available space, plus some characters (Z) that will be removed
             var messageTemplate = new string('x', messageSpace-4) + "ABCD" + new string('Z', 20);
@@ -81,7 +84,7 @@ namespace Serilog.Sinks.AzureTableStorage.Tests
             var rowKeyWithoutGuid = entity.RowKey.Substring(0, expectedRowKeyWithoutGuid.Length);
             var rowKeyGuid = entity.RowKey.Substring(expectedRowKeyWithoutGuid.Length);
 
-            Assert.Equal(1024, entity.RowKey.Length);
+            Assert.Equal(512, entity.RowKey.Length);
             Assert.Equal(expectedRowKeyWithoutGuid, rowKeyWithoutGuid);
             Guid.Parse(rowKeyGuid);
             Assert.Equal(Guid.Parse(rowKeyGuid).ToString(), rowKeyGuid);
@@ -259,6 +262,114 @@ namespace Serilog.Sinks.AzureTableStorage.Tests
 
             Assert.True(entity.ContainsKey("IncludedProperty"));
             Assert.False(entity.ContainsKey("AdditionalProperty"));
+        }
+
+        [Fact]
+        public void CreateEntityWithPropertiesShouldCropPropertiesToMaximumSupportedLength()
+        {
+            var timestamp = DateTimeOffset.Now;
+            var exception = new ArgumentException("Some exceptional exception happened");
+            var level = LogEventLevel.Information;
+            var template = new MessageTemplateParser().Parse("Template");
+            var keyGenerator = new PropertiesKeyGenerator();
+
+            var testProp = new StringBuilder();
+            int maximumLengthEstimateCharacters = _propertyMaximumSizeBytes / 2 - 9;
+            testProp.Append(new string('a', maximumLengthEstimateCharacters));
+
+            int utfBytesSize = Encoding.Unicode.GetBytes(testProp.ToString()).Length;
+            while (utfBytesSize <= _propertyMaximumSizeBytes + 10)
+            {
+                var properties = new List<LogEventProperty> { new LogEventProperty("TestProp", new ScalarValue(testProp.ToString())) };
+                var logEvent = new Events.LogEvent(timestamp, level, exception, template, properties);
+                var entity = AzureTableStorageEntityFactory.CreateEntityWithProperties(logEvent, null, null, keyGenerator);
+
+                var entityProp = (string)entity["TestProp"];
+
+                if (utfBytesSize <= _propertyMaximumSizeBytes)
+                {
+                    Assert.Equal(testProp.ToString(), entityProp);
+                }
+                else
+                {
+                    Assert.True(entityProp.Length <= _propertyMaximumSizeBytes);
+                    Assert.StartsWith(entityProp, testProp.ToString());
+                }
+
+                testProp.Append('a');
+                utfBytesSize = Encoding.Unicode.GetBytes(testProp.ToString()).Length;
+            }
+        }
+
+        [Fact]
+        public void CreateEntityWithPropertiesShouldCropPropertiesWithUnicodeSurrogatePairsToMaximumSupportedLength()
+        {
+            var timestamp = DateTimeOffset.Now;
+            var exception = new ArgumentException("Some exceptional exception happened");
+            var level = LogEventLevel.Information;
+            var template = new MessageTemplateParser().Parse("Template");
+            var keyGenerator = new PropertiesKeyGenerator();
+
+            var testProp = new StringBuilder();
+            int maximumLengthEstimateCharacters = _propertyMaximumSizeBytes / 2 - 9;
+            testProp.Append(new string('a', maximumLengthEstimateCharacters));
+
+            int utfBytesSize = Encoding.Unicode.GetBytes(testProp.ToString()).Length;
+            while (utfBytesSize <= _propertyMaximumSizeBytes + 10)
+            {
+                var properties = new List<LogEventProperty> { new LogEventProperty("TestProp", new ScalarValue(testProp.ToString())) };
+                var logEvent = new Events.LogEvent(timestamp, level, exception, template, properties);
+                var entity = AzureTableStorageEntityFactory.CreateEntityWithProperties(logEvent, null, null, keyGenerator);
+
+                var entityProp = (string)entity["TestProp"];
+
+                if (utfBytesSize <= _propertyMaximumSizeBytes)
+                {
+                    Assert.Equal(testProp.ToString(), entityProp);
+                }
+                else
+                {
+                    Assert.True(entityProp.Length <= _propertyMaximumSizeBytes);
+                    Assert.StartsWith(entityProp, testProp.ToString());
+                }
+
+                testProp.Append("\U0001F01C");
+                utfBytesSize = Encoding.Unicode.GetBytes(testProp.ToString()).Length;
+            }
+        }
+
+        [Fact]
+        public void CreateEntityWithPropertiesShouldCropStandardPropertiesToMaximumSupportedLength()
+        {
+            var timestamp = DateTimeOffset.Now;
+            var exception = new ArgumentException("Some exceptional exception happened " + new string('a', _propertyMaximumSizeBytes));
+            var level = LogEventLevel.Information;
+            var template = new MessageTemplateParser().Parse("Template {TestProp} " + new string('b', _propertyMaximumSizeBytes));
+            var keyGenerator = new PropertiesKeyGenerator();
+            var properties = new List<LogEventProperty> { new LogEventProperty("TestProp", new ScalarValue("foo")) };
+
+            string expectedRenderedException = $"System.ArgumentException: {exception.Message}";
+            var expectedRenderedTemplate = "Template \"foo\" " + new string('b', _propertyMaximumSizeBytes);
+
+            var logEvent = new Events.LogEvent(timestamp, level, exception, template, properties);
+            var entity = AzureTableStorageEntityFactory.CreateEntityWithProperties(logEvent, null, null, keyGenerator);
+
+            string storedMessageTemplate = (string)entity["MessageTemplate"];
+            string storedRenderedTemplate = (string)entity["RenderedMessage"];
+            string storedException = (string)entity["Exception"];
+
+            byte[] storedMessageTemplateBytes = Encoding.Unicode.GetBytes(storedMessageTemplate);
+            byte[] storedRenderedTemplateBytes = Encoding.Unicode.GetBytes(storedRenderedTemplate);
+            byte[] storedExceptionBytes = Encoding.Unicode.GetBytes(storedException);
+
+            Assert.True(storedMessageTemplateBytes.Length <= _propertyMaximumSizeBytes);
+            Assert.StartsWith(storedMessageTemplate, template.ToString());
+
+            Assert.True(storedRenderedTemplateBytes.Length <= _propertyMaximumSizeBytes);
+            Assert.StartsWith(storedRenderedTemplate, expectedRenderedTemplate);
+
+            Assert.True(storedExceptionBytes.Length <= _propertyMaximumSizeBytes);
+            Assert.StartsWith(storedException, expectedRenderedException);
         }
     }
 }

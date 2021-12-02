@@ -19,6 +19,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using Serilog.Sinks.AzureTableStorage.KeyGenerator;
 using Azure.Data.Tables;
+using System.Text;
 
 namespace Serilog.Sinks.AzureTableStorage
 {
@@ -30,6 +31,9 @@ namespace Serilog.Sinks.AzureTableStorage
         // Azure tables support a maximum of 255 properties. PartitionKey, RowKey and Timestamp
         // bring the maximum to 252.
         private const int _maxNumberOfPropertiesPerRow = 252;
+
+        // Maximum size of a property in Azure Table Storage
+        private const int _propertyMaximumSize = 65536;
 
         /// <summary>
         /// Creates a DynamicTableEntity for Azure Storage, given a Serilog <see cref="LogEvent"/>.Properties
@@ -50,13 +54,13 @@ namespace Serilog.Sinks.AzureTableStorage
                 Timestamp = logEvent.Timestamp
             };
 
-            tableEntity.Add("MessageTemplate", logEvent.MessageTemplate.Text);
-            tableEntity.Add("Level", logEvent.Level.ToString());
-            tableEntity.Add("RenderedMessage", logEvent.RenderMessage(formatProvider));
+            AddTableEntityProperty(tableEntity, "MessageTemplate", logEvent.MessageTemplate.Text);
+            AddTableEntityProperty(tableEntity, "Level", logEvent.Level.ToString());
+            AddTableEntityProperty(tableEntity, "RenderedMessage", logEvent.RenderMessage(formatProvider));
 
             if (logEvent.Exception != null)
             {
-                tableEntity.Add("Exception", logEvent.Exception.ToString());
+                AddTableEntityProperty(tableEntity, "Exception", logEvent.Exception.ToString());
             }
 
             List<KeyValuePair<ScalarValue, LogEventPropertyValue>> additionalData = null;
@@ -70,7 +74,7 @@ namespace Serilog.Sinks.AzureTableStorage
                 // Don't add table properties for numeric property names
                 if (isValid && (count++ < _maxNumberOfPropertiesPerRow - 1))
                 {
-                    tableEntity.Add(logProperty.Key, AzurePropertyFormatter.ToEntityProperty(logProperty.Value, null, formatProvider));
+                    AddTableEntityProperty(tableEntity, logProperty.Key, AzurePropertyFormatter.ToEntityProperty(logProperty.Value, null, formatProvider));
                 }
                 else
                 {
@@ -84,7 +88,7 @@ namespace Serilog.Sinks.AzureTableStorage
 
             if (additionalData != null)
             {
-                tableEntity.Add("AggregatedProperties", AzurePropertyFormatter.ToEntityProperty(new DictionaryValue(additionalData), null, formatProvider));
+                AddTableEntityProperty(tableEntity, "AggregatedProperties", AzurePropertyFormatter.ToEntityProperty(new DictionaryValue(additionalData), null, formatProvider));
             }
 
             return tableEntity;
@@ -111,6 +115,56 @@ namespace Serilog.Sinks.AzureTableStorage
         private static bool ShouldIncludeProperty(string propertyName, string[] propertyColumns)
         {
             return propertyColumns == null || propertyColumns.Contains(propertyName);
+        }
+
+        /// <summary>
+        /// Adds the given property to the table entity cropping too long string values to maximum allowed length.
+        /// </summary>
+        /// <param name="entity">The TableEntity to which the property is added</param>
+        /// <param name="propertyName">Name of the property to add</param>
+        /// <param name="value">Property value</param>
+        private static void AddTableEntityProperty(TableEntity entity, string propertyName, object value)
+        {
+            if (value is string stringValue)
+                entity.Add(propertyName, CropValueIsNecessary(stringValue, _propertyMaximumSize));
+            else
+                entity.Add(propertyName, value);
+        }
+
+        /// <summary>
+        /// Crops the given string so that it's UTF-16 encoded size is at most the specified number of bytes.
+        /// The cropping avoids cutting the string between surrogate pairs.
+        /// </summary>
+        /// <param name="str">String to crop</param>
+        /// <param name="maxByteLength">Maximum length of the returned string in bytes when UTF-16 encoded.</param>
+        /// <returns>The given string cropped to specified maximum size</returns>
+        private static string CropValueIsNecessary(string str, int maxByteLength)
+        {
+            if (str.Length < maxByteLength / 2)
+                return str;
+
+            byte[] byteArray = Encoding.Unicode.GetBytes(str);
+            int evenByteLength = maxByteLength - maxByteLength % 2;
+
+            if (byteArray.Length <= evenByteLength)
+                return str;
+
+            int bytePointer = evenByteLength;
+
+            if (IsUtf16TrailingSurrogate(byteArray[bytePointer + 1]))
+                bytePointer -= 2;
+
+            return Encoding.Unicode.GetString(byteArray, 0, bytePointer);
+        }
+
+        /// <summary>
+        /// Tests is the given byte a trailing surrogate's high byte.
+        /// </summary>
+        /// <param name="b">The byte to test</param>
+        /// <returns>True if the given byte is a trailing surrogate's high byte. False otherwise.</returns>
+        private static bool IsUtf16TrailingSurrogate(byte b)
+        {
+            return (b & 0b1111_1100) == 0b1101_1100;
         }
     }
 }

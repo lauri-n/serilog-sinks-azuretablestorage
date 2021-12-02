@@ -1,14 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
-using System.Reflection;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using Azure;
 using Azure.Data.Tables;
-using Azure.Data.Tables.Models;
-using Azure.Data.Tables.Sas;
 using Serilog.Events;
 using Serilog.Parsing;
+using Serilog.Sinks.AzureTableStorage.KeyGenerator;
 using Xunit;
 
 namespace Serilog.Sinks.AzureTableStorage.Tests
@@ -16,6 +16,8 @@ namespace Serilog.Sinks.AzureTableStorage.Tests
     [Collection("AzureStorageIntegrationTests")]
     public class AzureTableStorageWithPropertiesSinkTests
     {
+        private const int _propertyMaximumSizeBytes = 65536;
+
         static async Task<IReadOnlyList<TableEntity>> TableQueryTakeDynamicAsync(TableClient table, int takeCount)
         {
             var pages = table.QueryAsync<TableEntity>(maxPerPage: takeCount).AsPages().GetAsyncEnumerator();
@@ -409,6 +411,52 @@ namespace Serilog.Sinks.AzureTableStorage.Tests
         }
 
         [Fact]
+        public async Task WhenALoggerWritesToTheSinkLongStringsAreCroppedToMaximumSupportedLength()
+        {
+            var tableServiceClient = GetDevelopmentTableServiceClient();
+            var table = tableServiceClient.GetTableClient("LogEventEntity");
+
+            await table.DeleteAsync();
+
+            var logger = new LoggerConfiguration()
+                .WriteTo.AzureTableStorageWithProperties(tableServiceClient, keyGenerator: new TestKeyGenerator())
+                .CreateLogger();
+
+            var exception = new ArgumentException("Some exceptional exception happened " + new string('a', _propertyMaximumSizeBytes));
+            string expectedRenderedException = $"System.ArgumentException: {exception.Message}";
+
+            string longProperty = new string('b', _propertyMaximumSizeBytes);
+            string messageTemplate = "Test message {LongProperty} " + new string('c', _propertyMaximumSizeBytes);
+            string expectedRenderedMessage = messageTemplate.Replace("{LongProperty}", $"\"{longProperty}\"");
+
+            logger.Information(exception, messageTemplate, longProperty);
+
+            var result = (await TableQueryTakeDynamicAsync(table, takeCount: 1)).First();
+
+            string storedMessageTemplate = (string)result["MessageTemplate"];
+            string storedRenderedMessage = (string)result["RenderedMessage"];
+            string storedException = (string)result["Exception"];
+            string storedLongProperty = (string)result["LongProperty"];
+
+            byte[] storedMessageTemplateBytes = Encoding.Unicode.GetBytes(storedMessageTemplate);
+            byte[] storedRenderedMessageBytes = Encoding.Unicode.GetBytes(storedRenderedMessage);
+            byte[] storedExceptionBytes = Encoding.Unicode.GetBytes(storedException);
+            byte[] storedLongPropertyBytes = Encoding.Unicode.GetBytes(storedLongProperty);
+
+            Assert.StartsWith(storedMessageTemplate, messageTemplate);
+            Assert.True(storedMessageTemplateBytes.Length <= _propertyMaximumSizeBytes);
+
+            Assert.StartsWith(storedException, expectedRenderedException);
+            Assert.True(storedExceptionBytes.Length <= _propertyMaximumSizeBytes);
+
+            Assert.StartsWith(storedLongProperty, longProperty);
+            Assert.True(storedLongPropertyBytes.Length <= _propertyMaximumSizeBytes);
+
+            Assert.StartsWith(storedRenderedMessage, expectedRenderedMessage);
+            Assert.True(storedRenderedMessageBytes.Length <= _propertyMaximumSizeBytes);
+        }
+
+        [Fact]
         public void WhenALoggerUsesAnUnreachableStorageServiceItDoesntFail()
         {
             Log.Logger = new LoggerConfiguration()
@@ -528,5 +576,31 @@ namespace Serilog.Sinks.AzureTableStorage.Tests
             Assert.Equal(" ", result["Space"]);
         }
         */
+
+        // Keeping table keys short as Azure Storage Emulator has stricter limitations for key lengths:
+        // https://docs.microsoft.com/en-us/azure/storage/common/storage-use-emulator#differences-for-table-storage
+        class TestKeyGenerator : IKeyGenerator
+        {
+            private static readonly Regex _rowKeyNotAllowedMatch = new Regex(@"(\\|/|#|\?|[\x00-\x1f]|[\x7f-\x9f])");
+
+            public string GeneratePartitionKey(LogEvent logEvent)
+            {
+                return logEvent.Timestamp.UtcDateTime.ToString("yyyy-MM-ddTHH.mm", CultureInfo.InvariantCulture);
+            }
+
+            public string GenerateRowKey(LogEvent logEvent, string suffix = null)
+            {
+                string postfix = $"|{Guid.NewGuid()}";
+
+                var prefixBuilder = new StringBuilder(512);
+                prefixBuilder.Append(logEvent.Level).Append('|').Append(_rowKeyNotAllowedMatch.Replace(logEvent.MessageTemplate.Text, ""));
+
+                var maxPrefixLength = 200 - postfix.Length;
+                if (prefixBuilder.Length > maxPrefixLength)
+                    prefixBuilder.Length = maxPrefixLength;
+
+                return prefixBuilder.Append(postfix).ToString();
+            }
+        }
     }
 }

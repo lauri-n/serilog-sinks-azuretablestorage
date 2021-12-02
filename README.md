@@ -2,6 +2,8 @@
 
 Writes to a table in [Windows Azure Table Storage](https://azure.microsoft.com/en-us/documentation/articles/storage-dotnet-how-to-use-tables/).
 
+Uses the Azure.Data.Tables client library for Azure Table Storage.
+
 **Package** - [Serilog.Sinks.AzureTableStorage](http://nuget.org/packages/serilog.sinks.azuretablestorage) | **Platforms** - .NET Standard 2.0
 
 ```csharp
